@@ -10,8 +10,31 @@ type Profile = {
   name: string
 }
 
-function imageUrl(images?: { remoteUrl?: string; url?: string }[]) {
-  return images?.find(image => image.remoteUrl || image.url)?.remoteUrl ?? images?.find(image => image.url)?.url
+function imageUrl(baseUrl: string, images?: { coverType?: string; remoteUrl?: string; url?: string }[]) {
+  const orderedImages = [
+    ...(images?.filter(image => image.coverType === 'poster') ?? []),
+    ...(images?.filter(image => image.coverType === 'cover') ?? []),
+    ...(images?.filter(image => image.coverType === 'headshot') ?? []),
+    ...(images?.filter(image => image.coverType !== 'fanart') ?? []),
+    ...(images ?? [])
+  ]
+  const selectedImage = orderedImages.find(image => image.remoteUrl || image.url)
+  const rawUrl =
+    selectedImage?.remoteUrl?.startsWith('http://') || selectedImage?.remoteUrl?.startsWith('https://')
+      ? selectedImage.remoteUrl
+      : (selectedImage?.url ?? selectedImage?.remoteUrl)
+
+  if (!rawUrl) {
+    return undefined
+  }
+
+  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+    return rawUrl
+  }
+
+  const lidarrUrl = new URL(rawUrl, baseUrl)
+
+  return `/api/lidarr/image?path=${encodeURIComponent(`${lidarrUrl.pathname}${lidarrUrl.search}`)}`
 }
 
 function normalize(value: string) {
@@ -42,6 +65,54 @@ export class LidarrService {
     return this.get<LidarrArtist[]>('/api/v1/artist')
   }
 
+  async getAlbums(): Promise<LidarrAlbum[]> {
+    return this.get<LidarrAlbum[]>('/api/v1/album')
+  }
+
+  async browse(include: 'all' | 'artist' | 'album'): Promise<SearchResult[]> {
+    const [artists, albums] = await Promise.all([
+      include === 'album' ? Promise.resolve([]) : this.getArtists(),
+      include === 'artist' ? Promise.resolve([]) : this.getAlbums()
+    ])
+
+    const artistResults = artists.slice(0, 40).map<SearchResult>(artist => ({
+      id: artist.foreignArtistId ?? String(artist.id ?? artist.artistName),
+      type: 'artist',
+      title: artist.artistName,
+      subtitle: artist.disambiguation || artist.status || 'Artist',
+      overview: artist.overview,
+      imageUrl: imageUrl(this.baseUrl, artist.images),
+      status: 'available',
+      artist: {
+        name: artist.artistName,
+        id: artist.id,
+        foreignArtistId: artist.foreignArtistId
+      },
+      payload: artist
+    }))
+
+    const albumResults = albums.slice(0, 40).map<SearchResult>(album => ({
+      id: album.foreignAlbumId ?? String(album.id ?? `${album.artist?.artistName ?? 'album'}-${album.title}`),
+      type: 'album',
+      title: album.title,
+      subtitle: album.artist?.artistName ?? 'Album',
+      overview: album.overview || album.disambiguation,
+      imageUrl: imageUrl(this.baseUrl, album.images) ?? imageUrl(this.baseUrl, album.artist?.images),
+      year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
+      status: 'available',
+      artist: album.artist
+        ? {
+            name: album.artist.artistName,
+            id: album.artist.id,
+            foreignArtistId: album.artist.foreignArtistId
+          }
+        : undefined,
+      payload: album
+    }))
+
+    return [...artistResults, ...albumResults]
+  }
+
   async search(term: string, include: 'all' | 'artist' | 'album'): Promise<SearchResult[]> {
     const [existingArtists, artists, albums] = await Promise.all([
       this.getArtists(),
@@ -58,7 +129,7 @@ export class LidarrService {
       title: artist.artistName,
       subtitle: artist.disambiguation || artist.status || 'Artist',
       overview: artist.overview,
-      imageUrl: imageUrl(artist.images),
+      imageUrl: imageUrl(this.baseUrl, artist.images),
       status:
         (artist.foreignArtistId && existingIds.has(artist.foreignArtistId)) ||
         existingNames.has(normalize(artist.artistName))
@@ -66,6 +137,7 @@ export class LidarrService {
           : 'requestable',
       artist: {
         name: artist.artistName,
+        id: artist.id,
         foreignArtistId: artist.foreignArtistId
       },
       payload: artist
@@ -84,12 +156,13 @@ export class LidarrService {
         title: album.title,
         subtitle: artist?.artistName ?? 'Album',
         overview: album.overview || album.disambiguation,
-        imageUrl: imageUrl(album.images) ?? imageUrl(artist?.images),
+        imageUrl: imageUrl(this.baseUrl, album.images) ?? imageUrl(this.baseUrl, artist?.images),
         year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
         status: available ? 'available' : 'requestable',
         artist: artist
           ? {
               name: artist.artistName,
+              id: artist.id,
               foreignArtistId: artist.foreignArtistId
             }
           : undefined,
@@ -98,6 +171,73 @@ export class LidarrService {
     })
 
     return [...artistResults, ...albumResults]
+  }
+
+  async getArtistAlbums(
+    identifier: string,
+    artistName?: string
+  ): Promise<{ artist: SearchResult; albums: SearchResult[] }> {
+    const artists = await this.getArtists()
+    const artist = artists.find(item => String(item.id) === identifier || item.foreignArtistId === identifier)
+
+    if (!artist && !artistName) {
+      throw new Error('Artist not found.')
+    }
+
+    const lookupArtist = artist
+      ? undefined
+      : ((await this.lookupArtists(artistName ?? identifier)).find(item => item.foreignArtistId === identifier) ??
+        (await this.lookupArtists(artistName ?? identifier))[0])
+
+    const resolvedArtist = artist ?? lookupArtist
+
+    if (!resolvedArtist) {
+      throw new Error('Artist not found.')
+    }
+
+    const albums = artist ? await this.getAlbums() : await this.lookupAlbums(resolvedArtist.artistName)
+    const artistAlbums = albums
+      .filter(
+        album =>
+          album.artistId === resolvedArtist.id ||
+          album.artist?.foreignArtistId === resolvedArtist.foreignArtistId ||
+          normalize(album.artist?.artistName ?? '') === normalize(resolvedArtist.artistName)
+      )
+      .map<SearchResult>(album => ({
+        id: album.foreignAlbumId ?? String(album.id ?? `${resolvedArtist.artistName}-${album.title}`),
+        type: 'album',
+        title: album.title,
+        subtitle: resolvedArtist.artistName,
+        overview: album.overview || album.disambiguation,
+        imageUrl: imageUrl(this.baseUrl, album.images) ?? imageUrl(this.baseUrl, resolvedArtist.images),
+        year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
+        status: artist ? 'available' : 'requestable',
+        artist: {
+          name: resolvedArtist.artistName,
+          id: resolvedArtist.id,
+          foreignArtistId: resolvedArtist.foreignArtistId
+        },
+        payload: album
+      }))
+
+    return {
+      artist: {
+        id: resolvedArtist.foreignArtistId ?? String(resolvedArtist.id ?? resolvedArtist.artistName),
+        type: 'artist',
+        title: resolvedArtist.artistName,
+        subtitle: resolvedArtist.disambiguation || resolvedArtist.status || 'Artist',
+        overview: resolvedArtist.overview,
+        imageUrl: imageUrl(this.baseUrl, resolvedArtist.images),
+        status: artist ? 'available' : 'requestable',
+        artist: {
+          name: resolvedArtist.artistName,
+          id: resolvedArtist.id,
+          foreignArtistId: resolvedArtist.foreignArtistId
+        },
+        payload: resolvedArtist
+      },
+      albums: artistAlbums
+    }
   }
 
   async requestArtist(artist: LidarrArtist): Promise<RequestResult> {

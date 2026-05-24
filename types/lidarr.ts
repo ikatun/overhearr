@@ -1,10 +1,10 @@
-export type SearchKind = 'all' | 'artist' | 'album' | 'song'
+export type SearchKind = 'all' | 'artist' | 'album'
 
 export type RequestKind = 'artist' | 'album'
 
 export type SearchResult = {
   id: string
-  type: 'artist' | 'album' | 'song'
+  type: 'artist' | 'album'
   title: string
   subtitle?: string
   overview?: string
@@ -13,6 +13,7 @@ export type SearchResult = {
   status: 'available' | 'requestable' | 'external'
   artist?: {
     name: string
+    id?: number
     foreignArtistId?: string
   }
   payload: unknown
@@ -65,4 +66,9 @@ export type LidarrAlbum = {
   artist?: LidarrArtist
   artistId?: number
   images?: LidarrImage[]
+}
+
+export type ArtistAlbumsResponse = {
+  artist: SearchResult
+  albums: SearchResult[]
 }

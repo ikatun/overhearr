@@ -1,5 +1,7 @@
 'use client'
 
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import Link from 'next/link'
 import { FormEvent, useMemo, useState } from 'react'
 
 import type { PublicUser } from '@/types/auth'
@@ -15,23 +17,116 @@ type BulkResponse = {
   results: BulkArtistResult[]
 }
 
+type SettingsResponse = {
+  app: {
+    url: {
+      origin: string
+      host: string
+      protocol: string
+    }
+  }
+  plex: {
+    url: {
+      origin: string
+      host: string
+      protocol: string
+    }
+    clientIdentifier: string
+  }
+  musicService: {
+    url: {
+      origin: string
+      host: string
+      protocol: string
+    }
+  }
+}
+
 const filters: { label: string; value: SearchKind }[] = [
   { label: 'All', value: 'all' },
   { label: 'Artists', value: 'artist' },
-  { label: 'Albums', value: 'album' },
-  { label: 'Songs', value: 'song' }
+  { label: 'Albums', value: 'album' }
 ]
 
 function badgeLabel(result: SearchResult) {
-  if (result.status === 'available') return 'In Lidarr'
-  if (result.type === 'song') return 'Request artist'
+  if (result.status === 'available') return 'Available'
   return 'Request'
 }
 
 function typeLabel(result: SearchResult) {
   if (result.type === 'artist') return 'Artist'
-  if (result.type === 'album') return 'Album'
-  return 'Song'
+  return 'Album'
+}
+
+function resultKey(result: SearchResult) {
+  return `${result.type}-${result.id}`
+}
+
+function artistAlbumsHref(result: SearchResult) {
+  const artistId = result.artist?.id ?? result.artist?.foreignArtistId
+
+  if (!artistId) {
+    return undefined
+  }
+
+  return `/artists/${encodeURIComponent(String(artistId))}/albums?name=${encodeURIComponent(result.artist?.name ?? result.title)}`
+}
+
+async function fetchSearchResults(query: string, filter: SearchKind) {
+  const response = await fetch(`/api/search?query=${encodeURIComponent(query)}&type=${filter}`)
+
+  if (!response.ok) {
+    throw new Error('Search failed. Check the music service connection.')
+  }
+
+  const data = (await response.json()) as SearchResponse
+
+  return data.results
+}
+
+async function createRequest(result: SearchResult) {
+  const response = await fetch('/api/requests', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      type: result.type === 'album' ? 'album' : 'artist',
+      payload: result.payload
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error('Request failed. Check the music service connection.')
+  }
+
+  return (await response.json()) as RequestResponse
+}
+
+async function addBulkArtistRequests(artists: string[]) {
+  const response = await fetch('/api/bulk-artists', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ artists })
+  })
+
+  if (!response.ok) {
+    throw new Error('Bulk add failed. Check the music service connection.')
+  }
+
+  return (await response.json()) as BulkResponse
+}
+
+async function fetchSettings() {
+  const response = await fetch('/api/settings')
+
+  if (!response.ok) {
+    throw new Error('Could not load settings.')
+  }
+
+  return (await response.json()) as SettingsResponse
 }
 
 type OverhearrAppProps = {
@@ -39,17 +134,48 @@ type OverhearrAppProps = {
 }
 
 export function OverhearrApp({ user }: OverhearrAppProps) {
+  const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<SearchKind>('all')
-  const [results, setResults] = useState<SearchResult[]>([])
-  const [isSearching, setIsSearching] = useState(false)
-  const [activeTab, setActiveTab] = useState<'search' | 'bulk'>('search')
-  const [requestingId, setRequestingId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'search' | 'requests' | 'bulk' | 'settings'>('search')
   const [notice, setNotice] = useState<string | null>(null)
   const [bulkText, setBulkText] = useState('')
-  const [bulkResults, setBulkResults] = useState<BulkArtistResult[]>([])
-  const [isBulkAdding, setIsBulkAdding] = useState(false)
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const [selectedResultKey, setSelectedResultKey] = useState<string | null>(null)
+  const searchQuery = useQuery({
+    queryKey: ['search', query.trim(), filter],
+    queryFn: () => fetchSearchResults(query.trim(), filter),
+    staleTime: 30_000
+  })
+  const requestMutation = useMutation({
+    mutationFn: createRequest,
+    onSuccess: async data => {
+      setNotice(data.message)
+      setSelectedResultKey(null)
+      await queryClient.invalidateQueries({ queryKey: ['search'] })
+    },
+    onError: error => {
+      setNotice(error instanceof Error ? error.message : 'Request failed.')
+    }
+  })
+  const bulkMutation = useMutation({
+    mutationFn: addBulkArtistRequests,
+    onSuccess: async data => {
+      setNotice(null)
+      await queryClient.invalidateQueries({ queryKey: ['search'] })
+      return data
+    },
+    onError: error => {
+      setNotice(error instanceof Error ? error.message : 'Bulk add failed.')
+    }
+  })
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    enabled: activeTab === 'settings'
+  })
+  const results = searchQuery.data ?? []
+  const bulkResults = bulkMutation.data?.results ?? []
 
   const artistCount = useMemo(() => {
     return bulkText
@@ -60,60 +186,19 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
 
   async function search(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
-
-    if (query.trim().length < 2) {
-      setResults([])
-      return
-    }
-
-    setIsSearching(true)
     setNotice(null)
-
-    try {
-      const response = await fetch(`/api/search?query=${encodeURIComponent(query)}&type=${filter}`)
-      const data = (await response.json()) as SearchResponse
-      setResults(data.results)
-    } catch {
-      setNotice('Search failed. Check that Overhearr can reach Lidarr.')
-    } finally {
-      setIsSearching(false)
-    }
+    await searchQuery.refetch()
   }
 
   async function requestResult(result: SearchResult) {
-    if (result.type === 'song' && !result.artist?.name) {
-      setNotice('This song result did not include an artist to request.')
-      return
-    }
-
-    setRequestingId(result.id)
     setNotice(null)
+    requestMutation.mutate(result)
+  }
 
-    try {
-      const response = await fetch('/api/requests', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          type: result.type === 'album' ? 'album' : 'artist',
-          payload:
-            result.type === 'song'
-              ? {
-                  artistName: result.artist?.name,
-                  foreignArtistId: result.artist?.foreignArtistId
-                }
-              : result.payload
-        })
-      })
-      const data = (await response.json()) as RequestResponse
-      setNotice(data.message)
-      await search()
-    } catch {
-      setNotice('Request failed. Check the Lidarr connection and profiles.')
-    } finally {
-      setRequestingId(null)
-    }
+  function toggleResultActions(result: SearchResult) {
+    const key = resultKey(result)
+
+    setSelectedResultKey(selectedKey => (selectedKey === key ? null : key))
   }
 
   async function addBulkArtists() {
@@ -124,25 +209,8 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
 
     if (!artists.length) return
 
-    setIsBulkAdding(true)
-    setBulkResults([])
     setNotice(null)
-
-    try {
-      const response = await fetch('/api/bulk-artists', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ artists })
-      })
-      const data = (await response.json()) as BulkResponse
-      setBulkResults(data.results)
-    } catch {
-      setNotice('Bulk add failed. Check the Lidarr connection.')
-    } finally {
-      setIsBulkAdding(false)
-    }
+    bulkMutation.mutate(artists)
   }
 
   return (
@@ -174,6 +242,18 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
             </button>
             <button
               className={`flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold transition md:w-full ${
+                activeTab === 'requests'
+                  ? 'bg-violet-600 text-white shadow-lg shadow-violet-950/40'
+                  : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+              }`}
+              onClick={() => setActiveTab('requests')}
+              type="button"
+            >
+              <span className="w-5 text-center">◷</span>
+              Requests
+            </button>
+            <button
+              className={`flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold transition md:w-full ${
                 activeTab === 'bulk'
                   ? 'bg-violet-600 text-white shadow-lg shadow-violet-950/40'
                   : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
@@ -185,27 +265,18 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
               Bulk Add
             </button>
             <button
-              className="flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold text-slate-500 md:w-full"
-              disabled
-              type="button"
-            >
-              <span className="w-5 text-center">◷</span>
-              Requests
-            </button>
-            <button
-              className="flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold text-slate-500 md:w-full"
-              disabled
+              className={`flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold transition md:w-full ${
+                activeTab === 'settings'
+                  ? 'bg-violet-600 text-white shadow-lg shadow-violet-950/40'
+                  : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+              }`}
+              onClick={() => setActiveTab('settings')}
               type="button"
             >
               <span className="w-5 text-center">⚙</span>
               Settings
             </button>
           </nav>
-
-          <div className="absolute bottom-4 left-4 right-4 hidden rounded-md bg-amber-400 px-3 py-3 text-sm font-semibold text-slate-950 md:block md:w-[13.25rem]">
-            Overhearr Preview
-            <span className="mt-1 block text-xs font-medium text-amber-950/80">Lidarr connected</span>
-          </div>
         </aside>
 
         <section className="min-w-0 bg-[#111722]">
@@ -217,17 +288,17 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                   <input
                     className="h-12 w-full rounded-full border border-slate-700 bg-[#121723] px-11 text-base font-medium text-white outline-none ring-violet-400/70 placeholder:text-slate-400 focus:border-slate-600 focus:ring-2"
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Search Artists, Albums & Songs"
+                    placeholder="Search Artists & Albums"
                     type="search"
                     value={query}
                   />
                 </div>
                 <button
                   className="h-12 rounded-full bg-violet-600 px-5 text-sm font-bold text-white shadow-lg shadow-violet-950/30 transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={isSearching}
+                  disabled={searchQuery.isFetching}
                   type="submit"
                 >
-                  {isSearching ? 'Searching' : 'Search'}
+                  {searchQuery.isFetching ? 'Searching' : 'Search'}
                 </button>
               </form>
               <div className="relative">
@@ -272,10 +343,16 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
             </div>
           </header>
 
-          <div className="px-4 py-5 md:px-5">
+          <div className="px-4 py-5 md:px-5" onClick={() => setSelectedResultKey(null)}>
             {notice ? (
               <div className="mb-5 rounded-md border border-amber-300/30 bg-amber-300/10 px-4 py-3 text-sm font-medium text-amber-100">
                 {notice}
+              </div>
+            ) : null}
+
+            {searchQuery.isError ? (
+              <div className="mb-5 rounded-md border border-rose-400/30 bg-rose-500/15 px-4 py-3 text-sm font-medium text-rose-100">
+                {searchQuery.error instanceof Error ? searchQuery.error.message : 'Search failed.'}
               </div>
             ) : null}
 
@@ -308,126 +385,296 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                     </span>
                   </div>
 
-                  {results.length ? (
-                    <div className="flex gap-4 overflow-x-auto pb-3">
-                      {results.map(result => (
-                        <article className="group w-40 shrink-0 sm:w-44" key={`${result.type}-${result.id}`}>
-                          <div className="relative aspect-[2/3] overflow-hidden rounded-lg border border-slate-700/80 bg-slate-800 shadow-xl shadow-black/30">
-                            {result.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                alt=""
-                                className="h-full w-full object-cover transition duration-200 group-hover:scale-105"
-                                src={result.imageUrl}
-                              />
-                            ) : (
-                              <div className="grid h-full place-items-center bg-gradient-to-br from-slate-700 to-slate-900 text-6xl font-bold text-white/10">
-                                {result.title.slice(0, 1)}
-                              </div>
-                            )}
-                            <div className="absolute left-2 top-2 rounded-md bg-blue-600 px-2 py-1 text-[0.68rem] font-bold uppercase text-white shadow">
-                              {typeLabel(result)}
-                            </div>
-                            <div
-                              className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${
-                                result.status === 'available'
-                                  ? 'bg-green-400 text-green-950'
-                                  : 'bg-slate-700 text-slate-200'
-                              }`}
-                            >
-                              {result.status === 'available' ? '✓' : '−'}
-                            </div>
-                          </div>
-                          <div className="mt-2">
-                            <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100">
-                              {result.title}
-                            </h3>
-                            {result.subtitle ? (
-                              <p className="mt-1 line-clamp-1 text-xs text-slate-400">{result.subtitle}</p>
-                            ) : null}
-                            <button
-                              className="mt-2 h-9 w-full rounded-md bg-violet-600 text-xs font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                              disabled={result.status === 'available' || requestingId === result.id}
-                              onClick={() => requestResult(result)}
-                              type="button"
-                            >
-                              {requestingId === result.id ? 'Requesting' : badgeLabel(result)}
-                            </button>
-                          </div>
-                        </article>
+                  {searchQuery.isLoading ? (
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                      {Array.from({ length: 18 }).map((_, index) => (
+                        <div className="min-w-0" key={index}>
+                          <div className="aspect-[2/3] animate-pulse rounded-lg bg-slate-800" />
+                          <div className="mt-3 h-4 animate-pulse rounded bg-slate-800" />
+                          <div className="mt-2 h-3 w-2/3 animate-pulse rounded bg-slate-800" />
+                        </div>
                       ))}
+                    </div>
+                  ) : results.length ? (
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                      {results.map(result => {
+                        const albumsHref = artistAlbumsHref(result)
+
+                        return (
+                          <article className="group min-w-0" key={resultKey(result)}>
+                            <div
+                              className="relative block aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-lg border border-slate-700/80 bg-slate-800 text-left shadow-xl shadow-black/30 outline-none ring-violet-400/70 transition hover:border-slate-500 focus:ring-2"
+                              onKeyDown={event => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  toggleResultActions(result)
+                                }
+                              }}
+                              onClick={event => {
+                                event.stopPropagation()
+                                toggleResultActions(result)
+                              }}
+                              role="button"
+                              tabIndex={0}
+                            >
+                              {result.imageUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  alt=""
+                                  className="h-full w-full object-cover transition duration-200 group-hover:scale-105"
+                                  src={result.imageUrl}
+                                />
+                              ) : (
+                                <div className="grid h-full place-items-center bg-gradient-to-br from-slate-700 to-slate-900 text-6xl font-bold text-white/10">
+                                  {result.title.slice(0, 1)}
+                                </div>
+                              )}
+                              <div className="absolute left-2 top-2 rounded-md bg-blue-600 px-2 py-1 text-[0.68rem] font-bold uppercase text-white shadow">
+                                {typeLabel(result)}
+                              </div>
+                              <div
+                                className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${
+                                  result.status === 'available'
+                                    ? 'bg-green-400 text-green-950'
+                                    : 'bg-slate-700 text-slate-200'
+                                }`}
+                              >
+                                {result.status === 'available' ? '✓' : '−'}
+                              </div>
+
+                              {selectedResultKey === resultKey(result) ? (
+                                <div className="absolute inset-0 flex flex-col justify-end bg-slate-950/82 p-3 backdrop-blur-sm">
+                                  <button
+                                    aria-label="Close actions"
+                                    className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-slate-800 text-sm font-bold text-slate-200 transition hover:bg-slate-700"
+                                    onClick={event => {
+                                      event.stopPropagation()
+                                      setSelectedResultKey(null)
+                                    }}
+                                    type="button"
+                                  >
+                                    ×
+                                  </button>
+                                  <div>
+                                    <p className="text-xs font-bold uppercase tracking-wide text-violet-300">
+                                      {typeLabel(result)}
+                                    </p>
+                                    {result.type === 'artist' && albumsHref ? (
+                                      <Link
+                                        className="mt-1 block line-clamp-2 text-sm font-bold text-white transition hover:text-violet-200"
+                                        href={albumsHref}
+                                        onClick={event => event.stopPropagation()}
+                                      >
+                                        {result.title}
+                                      </Link>
+                                    ) : (
+                                      <p className="mt-1 line-clamp-2 text-sm font-bold text-white">{result.title}</p>
+                                    )}
+                                    {result.subtitle && result.type === 'artist' && albumsHref ? (
+                                      <Link
+                                        className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
+                                        href={albumsHref}
+                                        onClick={event => event.stopPropagation()}
+                                      >
+                                        {result.subtitle}
+                                      </Link>
+                                    ) : result.subtitle ? (
+                                      <p className="mt-1 line-clamp-1 text-xs text-slate-300">{result.subtitle}</p>
+                                    ) : null}
+                                    {result.status === 'available' ? (
+                                      <div className="mt-3 h-10 rounded-md bg-green-500 px-3 py-2 text-center text-sm font-bold text-green-950">
+                                        Available
+                                      </div>
+                                    ) : (
+                                      <button
+                                        className="mt-3 h-10 w-full rounded-md bg-violet-600 px-3 text-sm font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                                        disabled={
+                                          requestMutation.isPending && requestMutation.variables?.id === result.id
+                                        }
+                                        onClick={event => {
+                                          event.stopPropagation()
+                                          requestResult(result)
+                                        }}
+                                        type="button"
+                                      >
+                                        {requestMutation.isPending && requestMutation.variables?.id === result.id
+                                          ? 'Requesting'
+                                          : badgeLabel(result)}
+                                      </button>
+                                    )}
+                                    {result.type === 'artist' && albumsHref ? (
+                                      <Link
+                                        className="mt-2 block h-10 rounded-md bg-slate-800 px-3 py-2 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
+                                        href={albumsHref}
+                                        onClick={event => event.stopPropagation()}
+                                      >
+                                        View albums
+                                      </Link>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="mt-2 min-h-14">
+                              {result.type === 'artist' && albumsHref ? (
+                                <Link
+                                  className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100 transition hover:text-violet-200"
+                                  href={albumsHref}
+                                  onClick={event => event.stopPropagation()}
+                                >
+                                  {result.title}
+                                </Link>
+                              ) : (
+                                <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100">
+                                  {result.title}
+                                </h3>
+                              )}
+                              {result.subtitle && result.type === 'artist' && albumsHref ? (
+                                <Link
+                                  className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
+                                  href={albumsHref}
+                                  onClick={event => event.stopPropagation()}
+                                >
+                                  {result.subtitle}
+                                </Link>
+                              ) : result.subtitle ? (
+                                <p className="mt-1 line-clamp-1 text-xs text-slate-400">{result.subtitle}</p>
+                              ) : null}
+                            </div>
+                          </article>
+                        )
+                      })}
                     </div>
                   ) : (
                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                      {['Search artists', 'Find albums', 'Match songs', 'Bulk add'].map(item => (
+                      {['Search artists', 'Find albums', 'Request music', 'Bulk add'].map(item => (
                         <div className="rounded-lg border border-slate-700/70 bg-slate-900/70 p-5" key={item}>
                           <div className="mb-8 h-8 w-8 rounded-full bg-violet-600/80" />
                           <h3 className="text-lg font-bold">{item}</h3>
                           <p className="mt-2 text-sm leading-6 text-slate-400">
-                            Requests are routed through Lidarr server-side.
+                            Requests are handled privately by Overhearr.
                           </p>
                         </div>
                       ))}
                     </div>
                   )}
                 </section>
-
+              </div>
+            ) : activeTab === 'requests' ? (
+              <section>
+                <div className="mb-5 flex items-center gap-2">
+                  <h2 className="text-2xl font-bold tracking-tight">Recent Requests</h2>
+                  <span className="grid h-5 w-5 place-items-center rounded-full border border-slate-500 text-xs text-slate-300">
+                    ›
+                  </span>
+                </div>
                 {results.length ? (
-                  <section>
-                    <div className="mb-4 flex items-center gap-2">
-                      <h2 className="text-2xl font-bold tracking-tight">Recent Requests</h2>
-                      <span className="grid h-5 w-5 place-items-center rounded-full border border-slate-500 text-xs text-slate-300">
-                        ›
-                      </span>
-                    </div>
-                    <div className="flex gap-4 overflow-x-auto pb-3">
-                      {results.slice(0, 6).map(result => (
-                        <article
-                          className="relative h-36 w-80 shrink-0 overflow-hidden rounded-lg border border-slate-700/80 bg-slate-900 shadow-xl shadow-black/20 sm:w-96"
-                          key={`request-${result.type}-${result.id}`}
-                        >
-                          {result.imageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              alt=""
-                              className="absolute inset-0 h-full w-full object-cover opacity-25"
-                              src={result.imageUrl}
-                            />
-                          ) : null}
-                          <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/80 to-slate-950/30" />
-                          <div className="relative flex h-full justify-between gap-4 p-4">
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-300">{result.year ?? 'Music'}</p>
-                              <h3 className="mt-1 line-clamp-1 text-lg font-bold">{result.title}</h3>
-                              {result.subtitle ? (
-                                <p className="mt-2 line-clamp-1 text-sm text-slate-400">{result.subtitle}</p>
-                              ) : null}
-                              <div className="mt-3 flex items-center gap-2 text-sm">
-                                <span className="font-semibold text-slate-400">Status</span>
-                                <span
-                                  className={`rounded-full px-2 py-1 text-xs font-bold ${
-                                    result.status === 'available'
-                                      ? 'bg-green-500 text-green-950'
-                                      : 'bg-violet-500 text-violet-950'
-                                  }`}
-                                >
-                                  {result.status === 'available' ? 'Available' : 'Requested'}
-                                </span>
-                              </div>
-                            </div>
-                            <div className="hidden aspect-[2/3] h-full overflow-hidden rounded-md bg-slate-800 sm:block">
-                              {result.imageUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img alt="" className="h-full w-full object-cover" src={result.imageUrl} />
-                              ) : null}
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {results.slice(0, 12).map(result => (
+                      <article
+                        className="relative h-36 overflow-hidden rounded-lg border border-slate-700/80 bg-slate-900 shadow-xl shadow-black/20"
+                        key={`request-${result.type}-${result.id}`}
+                      >
+                        {result.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            alt=""
+                            className="absolute inset-0 h-full w-full object-cover opacity-25"
+                            src={result.imageUrl}
+                          />
+                        ) : null}
+                        <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/80 to-slate-950/30" />
+                        <div className="relative flex h-full justify-between gap-4 p-4">
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-300">{result.year ?? typeLabel(result)}</p>
+                            <h3 className="mt-1 line-clamp-1 text-lg font-bold">{result.title}</h3>
+                            {result.subtitle ? (
+                              <p className="mt-2 line-clamp-1 text-sm text-slate-400">{result.subtitle}</p>
+                            ) : null}
+                            <div className="mt-3 flex items-center gap-2 text-sm">
+                              <span className="font-semibold text-slate-400">Status</span>
+                              <span className="rounded-full bg-green-500 px-2 py-1 text-xs font-bold text-green-950">
+                                Available
+                              </span>
                             </div>
                           </div>
-                        </article>
-                      ))}
+                          <div className="hidden aspect-[2/3] h-full overflow-hidden rounded-md bg-slate-800 sm:block">
+                            {result.imageUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img alt="" className="h-full w-full object-cover" src={result.imageUrl} />
+                            ) : null}
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-700 px-6 py-12 text-center text-slate-400">
+                    Recent requests will appear here.
+                  </div>
+                )}
+              </section>
+            ) : activeTab === 'settings' ? (
+              <section className="max-w-5xl">
+                <div className="mb-5 flex items-center gap-2">
+                  <h2 className="text-2xl font-bold tracking-tight">Settings</h2>
+                  <span className="grid h-5 w-5 place-items-center rounded-full border border-slate-500 text-xs text-slate-300">
+                    ›
+                  </span>
+                </div>
+
+                {settingsQuery.isLoading ? (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-5" key={index}>
+                        <div className="h-4 w-24 animate-pulse rounded bg-slate-800" />
+                        <div className="mt-5 h-6 w-2/3 animate-pulse rounded bg-slate-800" />
+                        <div className="mt-3 h-4 w-1/2 animate-pulse rounded bg-slate-800" />
+                      </div>
+                    ))}
+                  </div>
+                ) : settingsQuery.isError ? (
+                  <div className="rounded-md border border-rose-400/30 bg-rose-500/15 px-4 py-3 text-sm font-medium text-rose-100">
+                    {settingsQuery.error instanceof Error ? settingsQuery.error.message : 'Could not load settings.'}
+                  </div>
+                ) : settingsQuery.data ? (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-5 shadow-xl shadow-black/20">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Plex Server</p>
+                      <h3 className="mt-2 truncate text-xl font-bold">{settingsQuery.data.plex.url.host}</h3>
+                      <p className="mt-2 break-all text-sm text-slate-400">{settingsQuery.data.plex.url.origin}</p>
+                      <div className="mt-4 inline-flex rounded-full bg-green-500 px-3 py-1 text-xs font-bold text-green-950">
+                        {settingsQuery.data.plex.url.protocol.toUpperCase()}
+                      </div>
                     </div>
-                  </section>
+
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-5 shadow-xl shadow-black/20">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Music Service</p>
+                      <h3 className="mt-2 truncate text-xl font-bold">{settingsQuery.data.musicService.url.host}</h3>
+                      <p className="mt-2 break-all text-sm text-slate-400">
+                        {settingsQuery.data.musicService.url.origin}
+                      </p>
+                      <div className="mt-4 inline-flex rounded-full bg-blue-500 px-3 py-1 text-xs font-bold text-blue-950">
+                        Server-side only
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-5 shadow-xl shadow-black/20">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Application URL</p>
+                      <h3 className="mt-2 truncate text-xl font-bold">{settingsQuery.data.app.url.host}</h3>
+                      <p className="mt-2 break-all text-sm text-slate-400">{settingsQuery.data.app.url.origin}</p>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-5 shadow-xl shadow-black/20">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Plex Client Identifier</p>
+                      <h3 className="mt-2 truncate text-xl font-bold">{settingsQuery.data.plex.clientIdentifier}</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        Used for Plex sign-in. Secrets, tokens, and API keys are intentionally hidden.
+                      </p>
+                    </div>
+                  </div>
                 ) : null}
-              </div>
+              </section>
             ) : (
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
                 <section className="rounded-lg border border-slate-700/80 bg-slate-900/80 p-5 shadow-xl shadow-black/20">
@@ -450,11 +697,11 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                     </p>
                     <button
                       className="h-11 rounded-md bg-violet-600 px-5 text-sm font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={!artistCount || isBulkAdding}
+                      disabled={!artistCount || bulkMutation.isPending}
                       onClick={addBulkArtists}
                       type="button"
                     >
-                      {isBulkAdding ? 'Adding...' : 'Add all'}
+                      {bulkMutation.isPending ? 'Adding...' : 'Add all'}
                     </button>
                   </div>
                 </section>
