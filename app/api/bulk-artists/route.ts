@@ -1,3 +1,4 @@
+import { requireSession } from '@/lib/session'
 import { LidarrService } from '@/services/lidarr-service'
 import type { BulkArtistResult } from '@/types/lidarr'
 
@@ -6,6 +7,8 @@ type BulkBody = {
 }
 
 export async function POST(request: Request) {
+  await requireSession()
+
   const body = (await request.json()) as BulkBody
   const names = [...new Set((body.artists ?? []).map(name => name.trim()).filter(Boolean))]
   const lidarr = new LidarrService()

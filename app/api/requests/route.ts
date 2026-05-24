@@ -1,3 +1,4 @@
+import { requireSession } from '@/lib/session'
 import { LidarrService } from '@/services/lidarr-service'
 import type { LidarrAlbum, LidarrArtist } from '@/types/lidarr'
 
@@ -12,6 +13,8 @@ type RequestBody =
     }
 
 export async function POST(request: Request) {
+  await requireSession()
+
   const body = (await request.json()) as RequestBody
   const lidarr = new LidarrService()
 

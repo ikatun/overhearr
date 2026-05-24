@@ -1,10 +1,13 @@
 import { NextRequest } from 'next/server'
 
+import { requireSession } from '@/lib/session'
 import { LidarrService } from '@/services/lidarr-service'
 import { MusicBrainzService } from '@/services/musicbrainz-service'
 import type { SearchKind } from '@/types/lidarr'
 
 export async function GET(request: NextRequest) {
+  await requireSession()
+
   const query = request.nextUrl.searchParams.get('query')?.trim() ?? ''
   const type = (request.nextUrl.searchParams.get('type') ?? 'all') as SearchKind
 

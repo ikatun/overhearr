@@ -2,6 +2,7 @@
 
 import { FormEvent, useMemo, useState } from 'react'
 
+import type { PublicUser } from '@/types/auth'
 import type { BulkArtistResult, RequestResult, SearchKind, SearchResult } from '@/types/lidarr'
 
 type SearchResponse = {
@@ -33,7 +34,11 @@ function typeLabel(result: SearchResult) {
   return 'Song'
 }
 
-export function OverhearrApp() {
+type OverhearrAppProps = {
+  user: PublicUser
+}
+
+export function OverhearrApp({ user }: OverhearrAppProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<SearchKind>('all')
   const [results, setResults] = useState<SearchResult[]>([])
@@ -44,6 +49,7 @@ export function OverhearrApp() {
   const [bulkText, setBulkText] = useState('')
   const [bulkResults, setBulkResults] = useState<BulkArtistResult[]>([])
   const [isBulkAdding, setIsBulkAdding] = useState(false)
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
 
   const artistCount = useMemo(() => {
     return bulkText
@@ -204,8 +210,8 @@ export function OverhearrApp() {
 
         <section className="min-w-0 bg-[#111722]">
           <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-[#111722]/95 px-4 py-3 backdrop-blur md:px-5">
-            <form onSubmit={search}>
-              <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3">
+              <form className="flex flex-1 items-center gap-3" onSubmit={search}>
                 <div className="relative flex-1">
                   <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">⌕</span>
                   <input
@@ -223,11 +229,47 @@ export function OverhearrApp() {
                 >
                   {isSearching ? 'Searching' : 'Search'}
                 </button>
-                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-stone-500 text-lg font-semibold text-stone-100">
-                  I
-                </div>
+              </form>
+              <div className="relative">
+                <button
+                  aria-expanded={isUserMenuOpen}
+                  aria-haspopup="menu"
+                  className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-stone-500 text-lg font-semibold text-stone-100 ring-violet-400/70 transition hover:ring-2"
+                  onClick={() => setIsUserMenuOpen(open => !open)}
+                  title={user.username}
+                  type="button"
+                >
+                  {user.thumb ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img alt="" className="h-full w-full object-cover" src={user.thumb} />
+                  ) : (
+                    user.username.slice(0, 1).toUpperCase()
+                  )}
+                </button>
+
+                {isUserMenuOpen ? (
+                  <div
+                    className="absolute right-0 top-14 z-30 w-64 overflow-hidden rounded-md border border-slate-700 bg-slate-800 shadow-2xl shadow-black/50"
+                    role="menu"
+                  >
+                    <div className="border-b border-slate-700 px-4 py-3">
+                      <p className="truncate text-sm font-bold text-white">{user.username}</p>
+                      {user.email ? <p className="mt-1 truncate text-xs text-slate-400">{user.email}</p> : null}
+                    </div>
+                    <form action="/api/auth/logout" method="post">
+                      <button
+                        className="flex h-11 w-full items-center gap-3 px-4 text-left text-sm font-semibold text-slate-200 transition hover:bg-slate-700"
+                        role="menuitem"
+                        type="submit"
+                      >
+                        <span className="text-base">↪</span>
+                        Sign out
+                      </button>
+                    </form>
+                  </div>
+                ) : null}
               </div>
-            </form>
+            </div>
           </header>
 
           <div className="px-4 py-5 md:px-5">
