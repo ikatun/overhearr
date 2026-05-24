@@ -123,29 +123,7 @@ export class PlexService {
       status: identityResponse.status
     })
 
-    const sectionsUrl = new URL('/library/sections', this.env.plexServerUrl)
-    sectionsUrl.searchParams.set('X-Plex-Token', token)
-
-    logPlexAuth('checking Plex library sections')
-
-    const sectionsResponse = await fetch(sectionsUrl, { cache: 'no-store' })
-
-    if (!sectionsResponse.ok) {
-      logPlexAuthError('Plex library sections check failed', {
-        status: sectionsResponse.status,
-        statusText: sectionsResponse.statusText
-      })
-      throw new Error('Overhearr could not verify Plex library access.')
-    }
-
-    const sections = await sectionsResponse.text()
-
-    if (!sections.includes('type="artist"') && !sections.includes('Plex Music Scanner')) {
-      logPlexAuthError('Plex music library was not found in library sections')
-      throw new Error('Your Plex account does not appear to have access to a music library.')
-    }
-
-    logPlexAuth('Plex music library check passed')
+    logPlexAuth('skipping Plex library sections check; shared users may not be allowed to enumerate sections')
   }
 
   private async plexFetch<T>(url: URL, init?: RequestInit) {
