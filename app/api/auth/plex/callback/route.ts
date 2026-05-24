@@ -36,6 +36,11 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Plex sign-in failed.'
 
+    console.error('[PlexAuth] callback failed', {
+      message,
+      pinId
+    })
+
     return NextResponse.redirect(loginErrorUrl(message))
   }
 }
