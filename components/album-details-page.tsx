@@ -113,9 +113,24 @@ export function AlbumDetailsPage({ albumId, albumTitle, artistName, backHref }: 
   const tracks = albumQuery.data?.tracks ?? []
   const availableTracks = tracks.filter(track => track.hasFile).length
   const artistId = album?.artist?.id ?? album?.artist?.foreignArtistId
+  const currentAlbumHref = (() => {
+    const params = new URLSearchParams()
+
+    if (albumTitle) {
+      params.set('title', albumTitle)
+    }
+
+    if (artistName) {
+      params.set('artist', artistName)
+    }
+
+    params.set('from', backHref)
+
+    return `/albums/${encodeURIComponent(albumId)}?${params.toString()}`
+  })()
   const artistHref =
     album && artistId
-      ? `/artists/${encodeURIComponent(String(artistId))}/albums?name=${encodeURIComponent(album.artist?.name ?? '')}&from=${encodeURIComponent(backHref)}`
+      ? `/artists/${encodeURIComponent(String(artistId))}/albums?name=${encodeURIComponent(album.artist?.name ?? '')}&from=${encodeURIComponent(currentAlbumHref)}`
       : undefined
   const canRequest = album?.status === 'requestable'
 
@@ -199,8 +214,16 @@ export function AlbumDetailsPage({ albumId, albumTitle, artistName, backHref }: 
                 <p className="mt-1 text-sm text-slate-400">
                   {tracks.length ? 'available tracks' : 'Track list is available after the album exists locally.'}
                 </p>
+                {artistHref ? (
+                  <Link
+                    className="mt-4 block h-11 rounded-md bg-slate-800 px-4 py-3 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
+                    href={artistHref}
+                  >
+                    View artist
+                  </Link>
+                ) : null}
                 <button
-                  className="mt-4 h-14 w-full rounded-md bg-violet-600 px-4 text-base font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                  className="mt-3 h-14 w-full rounded-md bg-violet-600 px-4 text-base font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                   disabled={!canRequest || requestMutation.isPending}
                   onClick={() => requestMutation.mutate(album)}
                   type="button"

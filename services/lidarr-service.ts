@@ -144,7 +144,7 @@ export class LidarrService {
   async browse(include: 'all' | 'artist' | 'album'): Promise<SearchResult[]> {
     const [artists, albums] = await Promise.all([
       include === 'album' ? Promise.resolve([]) : this.getArtists(),
-      include === 'artist' ? Promise.resolve([]) : this.getAlbums()
+      include === 'album' ? this.getAlbums() : Promise.resolve([])
     ])
 
     const artistResults = artists.slice(0, 40).map<SearchResult>(artist => ({
