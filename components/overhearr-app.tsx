@@ -50,7 +50,29 @@ const filters: { label: string; value: SearchKind }[] = [
 
 function badgeLabel(result: SearchResult) {
   if (result.status === 'available') return 'Available'
+  if (result.status === 'partial') return 'Partial'
+  if (result.status === 'requested') return 'Requested'
   return 'Request'
+}
+
+function canRequest(result: SearchResult) {
+  return result.status === 'requestable'
+}
+
+function statusBadgeClass(status: SearchResult['status']) {
+  if (status === 'available') return 'bg-green-400 text-green-950'
+  if (status === 'partial') return 'bg-amber-400 text-amber-950'
+  if (status === 'requested') return 'bg-violet-400 text-violet-950'
+
+  return 'bg-slate-700 text-slate-200'
+}
+
+function statusIcon(status: SearchResult['status']) {
+  if (status === 'available') return '✓'
+  if (status === 'partial') return '◐'
+  if (status === 'requested') return '…'
+
+  return '−'
 }
 
 function typeLabel(result: SearchResult) {
@@ -433,13 +455,9 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                 {typeLabel(result)}
                               </div>
                               <div
-                                className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${
-                                  result.status === 'available'
-                                    ? 'bg-green-400 text-green-950'
-                                    : 'bg-slate-700 text-slate-200'
-                                }`}
+                                className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${statusBadgeClass(result.status)}`}
                               >
-                                {result.status === 'available' ? '✓' : '−'}
+                                {statusIcon(result.status)}
                               </div>
 
                               {selectedResultKey === resultKey(result) ? (
@@ -481,11 +499,7 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                     ) : result.subtitle ? (
                                       <p className="mt-1 line-clamp-1 text-xs text-slate-300">{result.subtitle}</p>
                                     ) : null}
-                                    {result.status === 'available' ? (
-                                      <div className="mt-3 h-10 rounded-md bg-green-500 px-3 py-2 text-center text-sm font-bold text-green-950">
-                                        Available
-                                      </div>
-                                    ) : (
+                                    {canRequest(result) ? (
                                       <button
                                         className="mt-3 h-10 w-full rounded-md bg-violet-600 px-3 text-sm font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                                         disabled={
@@ -501,6 +515,12 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                           ? 'Requesting'
                                           : badgeLabel(result)}
                                       </button>
+                                    ) : (
+                                      <div
+                                        className={`mt-3 h-10 rounded-md px-3 py-2 text-center text-sm font-bold ${statusBadgeClass(result.status)}`}
+                                      >
+                                        {badgeLabel(result)}
+                                      </div>
                                     )}
                                     {result.type === 'artist' && albumsHref ? (
                                       <Link

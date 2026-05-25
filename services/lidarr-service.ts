@@ -41,6 +41,30 @@ function normalize(value: string) {
   return value.trim().toLocaleLowerCase()
 }
 
+function albumStatus(album: LidarrAlbum, isKnown: boolean): SearchResult['status'] {
+  if (!isKnown) {
+    return 'requestable'
+  }
+
+  const percentOfTracks = album.statistics?.percentOfTracks ?? 0
+  const trackFileCount = album.statistics?.trackFileCount ?? 0
+  const trackCount = album.statistics?.trackCount ?? album.statistics?.totalTrackCount ?? 0
+
+  if (percentOfTracks >= 100 || (trackCount > 0 && trackFileCount >= trackCount)) {
+    return 'available'
+  }
+
+  if (trackFileCount > 0 || percentOfTracks > 0) {
+    return 'partial'
+  }
+
+  if (album.monitored) {
+    return 'requested'
+  }
+
+  return 'requestable'
+}
+
 export class LidarrService {
   private readonly baseUrl = getServerEnv().lidarrUrl
   private readonly apiKey = getServerEnv().lidarrApiKey
@@ -99,7 +123,7 @@ export class LidarrService {
       overview: album.overview || album.disambiguation,
       imageUrl: imageUrl(this.baseUrl, album.images) ?? imageUrl(this.baseUrl, album.artist?.images),
       year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
-      status: 'available',
+      status: albumStatus(album, true),
       artist: album.artist
         ? {
             name: album.artist.artistName,
@@ -114,8 +138,9 @@ export class LidarrService {
   }
 
   async search(term: string, include: 'all' | 'artist' | 'album'): Promise<SearchResult[]> {
-    const [existingArtists, artists, albums] = await Promise.all([
+    const [existingArtists, existingAlbums, artists, albums] = await Promise.all([
       this.getArtists(),
+      include === 'artist' ? Promise.resolve([]) : this.getAlbums(),
       include === 'album' ? Promise.resolve([]) : this.lookupArtists(term),
       include === 'artist' ? Promise.resolve([]) : this.lookupAlbums(term)
     ])
@@ -149,6 +174,16 @@ export class LidarrService {
         artist &&
         ((artist.foreignArtistId && existingIds.has(artist.foreignArtistId)) ||
           existingNames.has(normalize(artist.artistName)))
+      const existingAlbum = existingAlbums.find(existing => {
+        if (album.foreignAlbumId && existing.foreignAlbumId === album.foreignAlbumId) {
+          return true
+        }
+
+        return (
+          normalize(existing.title) === normalize(album.title) &&
+          normalize(existing.artist?.artistName ?? '') === normalize(artist?.artistName ?? '')
+        )
+      })
 
       return {
         id: album.foreignAlbumId ?? `${album.artist?.artistName ?? 'album'}-${album.title}`,
@@ -158,7 +193,7 @@ export class LidarrService {
         overview: album.overview || album.disambiguation,
         imageUrl: imageUrl(this.baseUrl, album.images) ?? imageUrl(this.baseUrl, artist?.images),
         year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
-        status: available ? 'available' : 'requestable',
+        status: existingAlbum ? albumStatus(existingAlbum, true) : available ? 'requestable' : 'requestable',
         artist: artist
           ? {
               name: artist.artistName,
@@ -211,7 +246,7 @@ export class LidarrService {
         overview: album.overview || album.disambiguation,
         imageUrl: imageUrl(this.baseUrl, album.images) ?? imageUrl(this.baseUrl, resolvedArtist.images),
         year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
-        status: artist ? 'available' : 'requestable',
+        status: albumStatus(album, Boolean(artist)),
         artist: {
           name: resolvedArtist.artistName,
           id: resolvedArtist.id,

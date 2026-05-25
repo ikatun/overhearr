@@ -10,7 +10,7 @@ export type SearchResult = {
   overview?: string
   imageUrl?: string
   year?: number
-  status: 'available' | 'requestable' | 'external'
+  status: 'available' | 'partial' | 'requested' | 'requestable' | 'external'
   artist?: {
     name: string
     id?: number
@@ -66,6 +66,13 @@ export type LidarrAlbum = {
   artist?: LidarrArtist
   artistId?: number
   images?: LidarrImage[]
+  statistics?: {
+    trackFileCount?: number
+    trackCount?: number
+    totalTrackCount?: number
+    sizeOnDisk?: number
+    percentOfTracks?: number
+  }
 }
 
 export type ArtistAlbumsResponse = {

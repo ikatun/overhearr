@@ -47,6 +47,30 @@ async function requestArtist(artist: SearchResult) {
   return (await response.json()) as RequestResult
 }
 
+function albumStatusLabel(status: SearchResult['status']) {
+  if (status === 'available') return 'Available'
+  if (status === 'partial') return 'Partial'
+  if (status === 'requested') return 'Requested'
+
+  return 'Missing'
+}
+
+function albumStatusClass(status: SearchResult['status']) {
+  if (status === 'available') return 'bg-green-400 text-green-950'
+  if (status === 'partial') return 'bg-amber-400 text-amber-950'
+  if (status === 'requested') return 'bg-violet-400 text-violet-950'
+
+  return 'bg-slate-700 text-slate-200'
+}
+
+function albumStatusIcon(status: SearchResult['status']) {
+  if (status === 'available') return '✓'
+  if (status === 'partial') return '◐'
+  if (status === 'requested') return '…'
+
+  return '−'
+}
+
 export function ArtistAlbumsPage({ artistId, artistName }: ArtistAlbumsPageProps) {
   const queryClient = useQueryClient()
   const [notice, setNotice] = useState<string | null>(null)
@@ -159,13 +183,18 @@ export function ArtistAlbumsPage({ artistId, artistName }: ArtistAlbumsPageProps
                   <div className="absolute left-2 top-2 rounded-md bg-blue-600 px-2 py-1 text-[0.68rem] font-bold uppercase text-white shadow">
                     Album
                   </div>
-                  <div className="absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full bg-green-400 text-xs font-black text-green-950">
-                    ✓
+                  <div
+                    className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${albumStatusClass(album.status)}`}
+                    title={albumStatusLabel(album.status)}
+                  >
+                    {albumStatusIcon(album.status)}
                   </div>
                 </div>
                 <div className="mt-2 min-h-14">
                   <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100">{album.title}</h3>
-                  {album.year ? <p className="mt-1 text-xs text-slate-400">{album.year}</p> : null}
+                  <p className="mt-1 text-xs text-slate-400">
+                    {[album.year, albumStatusLabel(album.status)].filter(Boolean).join(' · ')}
+                  </p>
                 </div>
               </article>
             ))}
