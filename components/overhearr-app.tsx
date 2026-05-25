@@ -2,7 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
-import { FormEvent, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 
 import type { PublicUser } from '@/types/auth'
 import type { BulkArtistResult, RequestResult, SearchKind, SearchResult } from '@/types/lidarr'
@@ -52,6 +53,7 @@ function badgeLabel(result: SearchResult) {
   if (result.status === 'available') return 'Available'
   if (result.status === 'partial') return 'Partial'
   if (result.status === 'requested') return 'Requested'
+  if (result.type === 'artist') return 'Request all albums'
   return 'Request'
 }
 
@@ -84,14 +86,44 @@ function resultKey(result: SearchResult) {
   return `${result.type}-${result.id}`
 }
 
-function artistAlbumsHref(result: SearchResult) {
+type ActiveTab = 'search' | 'requests' | 'bulk' | 'settings'
+
+function withFromParam(href: string, fromHref: string) {
+  const [pathname, search = ''] = href.split('?')
+  const params = new URLSearchParams(search)
+
+  params.set('from', fromHref)
+
+  return `${pathname}?${params.toString()}`
+}
+
+function artistAlbumsHref(result: SearchResult, fromHref: string) {
   const artistId = result.artist?.id ?? result.artist?.foreignArtistId
 
   if (!artistId) {
     return undefined
   }
 
-  return `/artists/${encodeURIComponent(String(artistId))}/albums?name=${encodeURIComponent(result.artist?.name ?? result.title)}`
+  return withFromParam(
+    `/artists/${encodeURIComponent(String(artistId))}/albums?name=${encodeURIComponent(result.artist?.name ?? result.title)}`,
+    fromHref
+  )
+}
+
+function albumDetailsHref(result: SearchResult, fromHref: string) {
+  if (result.type !== 'album') {
+    return undefined
+  }
+
+  const params = new URLSearchParams()
+
+  params.set('title', result.title)
+
+  if (result.artist?.name || result.subtitle) {
+    params.set('artist', result.artist?.name ?? result.subtitle ?? '')
+  }
+
+  return withFromParam(`/albums/${encodeURIComponent(result.id)}?${params.toString()}`, fromHref)
 }
 
 async function fetchSearchResults(query: string, filter: SearchKind) {
@@ -152,14 +184,18 @@ async function fetchSettings() {
 }
 
 type OverhearrAppProps = {
+  initialFilter: SearchKind
+  initialQuery: string
+  initialTab: ActiveTab
   user: PublicUser
 }
 
-export function OverhearrApp({ user }: OverhearrAppProps) {
+export function OverhearrApp({ initialFilter, initialQuery, initialTab, user }: OverhearrAppProps) {
+  const router = useRouter()
   const queryClient = useQueryClient()
-  const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<SearchKind>('all')
-  const [activeTab, setActiveTab] = useState<'search' | 'requests' | 'bulk' | 'settings'>('search')
+  const [query, setQuery] = useState(initialQuery)
+  const [filter, setFilter] = useState<SearchKind>(initialFilter)
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab)
   const [notice, setNotice] = useState<string | null>(null)
   const [bulkText, setBulkText] = useState('')
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
@@ -198,6 +234,25 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
   })
   const results = searchQuery.data ?? []
   const bulkResults = bulkMutation.data?.results ?? []
+  const currentHomeHref = useMemo(() => {
+    const params = new URLSearchParams()
+
+    if (query.trim()) {
+      params.set('q', query.trim())
+    }
+
+    if (filter !== 'all') {
+      params.set('type', filter)
+    }
+
+    if (activeTab !== 'search') {
+      params.set('tab', activeTab)
+    }
+
+    const search = params.toString()
+
+    return search ? `/?${search}` : '/'
+  }, [activeTab, filter, query])
 
   const artistCount = useMemo(() => {
     return bulkText
@@ -205,6 +260,10 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
       .map(value => value.trim())
       .filter(Boolean).length
   }, [bulkText])
+
+  useEffect(() => {
+    router.replace(currentHomeHref, { scroll: false })
+  }, [currentHomeHref, router])
 
   async function search(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
@@ -420,7 +479,8 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                   ) : results.length ? (
                     <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                       {results.map(result => {
-                        const albumsHref = artistAlbumsHref(result)
+                        const albumsHref = artistAlbumsHref(result, currentHomeHref)
+                        const albumHref = albumDetailsHref(result, currentHomeHref)
 
                         return (
                           <article className="group min-w-0" key={resultKey(result)}>
@@ -485,6 +545,14 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                       >
                                         {result.title}
                                       </Link>
+                                    ) : result.type === 'album' && albumHref ? (
+                                      <Link
+                                        className="mt-1 block line-clamp-2 text-sm font-bold text-white transition hover:text-violet-200"
+                                        href={albumHref}
+                                        onClick={event => event.stopPropagation()}
+                                      >
+                                        {result.title}
+                                      </Link>
                                     ) : (
                                       <p className="mt-1 line-clamp-2 text-sm font-bold text-white">{result.title}</p>
                                     )}
@@ -492,6 +560,14 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                       <Link
                                         className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
                                         href={albumsHref}
+                                        onClick={event => event.stopPropagation()}
+                                      >
+                                        {result.subtitle}
+                                      </Link>
+                                    ) : result.subtitle && result.type === 'album' && albumHref ? (
+                                      <Link
+                                        className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
+                                        href={albumHref}
                                         onClick={event => event.stopPropagation()}
                                       >
                                         {result.subtitle}
@@ -530,6 +606,14 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                       >
                                         View albums
                                       </Link>
+                                    ) : result.type === 'album' && albumHref ? (
+                                      <Link
+                                        className="mt-2 block h-10 rounded-md bg-slate-800 px-3 py-2 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
+                                        href={albumHref}
+                                        onClick={event => event.stopPropagation()}
+                                      >
+                                        View album
+                                      </Link>
                                     ) : null}
                                   </div>
                                 </div>
@@ -544,6 +628,14 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                 >
                                   {result.title}
                                 </Link>
+                              ) : result.type === 'album' && albumHref ? (
+                                <Link
+                                  className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100 transition hover:text-violet-200"
+                                  href={albumHref}
+                                  onClick={event => event.stopPropagation()}
+                                >
+                                  {result.title}
+                                </Link>
                               ) : (
                                 <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100">
                                   {result.title}
@@ -553,6 +645,14 @@ export function OverhearrApp({ user }: OverhearrAppProps) {
                                 <Link
                                   className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
                                   href={albumsHref}
+                                  onClick={event => event.stopPropagation()}
+                                >
+                                  {result.subtitle}
+                                </Link>
+                              ) : result.subtitle && result.type === 'album' && albumHref ? (
+                                <Link
+                                  className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
+                                  href={albumHref}
                                   onClick={event => event.stopPropagation()}
                                 >
                                   {result.subtitle}

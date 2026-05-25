@@ -75,7 +75,32 @@ export type LidarrAlbum = {
   }
 }
 
+export type LidarrTrack = {
+  id?: number
+  artistId?: number
+  albumId?: number
+  foreignTrackId?: string
+  foreignRecordingId?: string
+  trackFileId?: number
+  explicit?: boolean
+  absoluteTrackNumber?: number
+  trackNumber?: string
+  title: string
+  duration?: number
+  mediumNumber?: number
+  hasFile?: boolean
+  ratings?: {
+    votes?: number
+    value?: number
+  }
+}
+
 export type ArtistAlbumsResponse = {
   artist: SearchResult
   albums: SearchResult[]
+}
+
+export type AlbumDetailsResponse = {
+  album: SearchResult
+  tracks: LidarrTrack[]
 }

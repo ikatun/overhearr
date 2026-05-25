@@ -8,6 +8,7 @@ type ArtistAlbumsRouteProps = {
     id: string
   }>
   searchParams: Promise<{
+    from?: string
     name?: string
   }>
 }
@@ -20,7 +21,7 @@ export default async function ArtistAlbumsRoute({ params, searchParams }: Artist
   }
 
   const { id } = await params
-  const { name } = await searchParams
+  const { from, name } = await searchParams
 
-  return <ArtistAlbumsPage artistId={id} artistName={name} />
+  return <ArtistAlbumsPage artistId={id} artistName={name} backHref={from ?? '/'} />
 }

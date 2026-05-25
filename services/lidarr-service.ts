@@ -1,5 +1,12 @@
 import { getServerEnv } from '@/lib/env'
-import type { LidarrAlbum, LidarrArtist, RequestResult, SearchResult } from '@/types/lidarr'
+import type {
+  AlbumDetailsResponse,
+  LidarrAlbum,
+  LidarrArtist,
+  LidarrTrack,
+  RequestResult,
+  SearchResult
+} from '@/types/lidarr'
 
 type RootFolder = {
   path: string
@@ -65,6 +72,34 @@ function albumStatus(album: LidarrAlbum, isKnown: boolean): SearchResult['status
   return 'requestable'
 }
 
+function albumSearchResult(
+  baseUrl: string,
+  album: LidarrAlbum,
+  isKnown: boolean,
+  fallbackArtist?: LidarrArtist
+): SearchResult {
+  const artist = album.artist ?? fallbackArtist
+
+  return {
+    id: album.foreignAlbumId ?? String(album.id ?? `${artist?.artistName ?? 'album'}-${album.title}`),
+    type: 'album',
+    title: album.title,
+    subtitle: artist?.artistName ?? 'Album',
+    overview: album.overview || album.disambiguation,
+    imageUrl: imageUrl(baseUrl, album.images) ?? imageUrl(baseUrl, artist?.images),
+    year: album.releaseDate ? new Date(album.releaseDate).getFullYear() : undefined,
+    status: albumStatus(album, isKnown),
+    artist: artist
+      ? {
+          name: artist.artistName,
+          id: artist.id,
+          foreignArtistId: artist.foreignArtistId
+        }
+      : undefined,
+    payload: album
+  }
+}
+
 export class LidarrService {
   private readonly baseUrl = getServerEnv().lidarrUrl
   private readonly apiKey = getServerEnv().lidarrApiKey
@@ -91,6 +126,19 @@ export class LidarrService {
 
   async getAlbums(): Promise<LidarrAlbum[]> {
     return this.get<LidarrAlbum[]>('/api/v1/album')
+  }
+
+  async getTracks(albumId: number): Promise<LidarrTrack[]> {
+    const tracks = await this.get<LidarrTrack[]>('/api/v1/track', { albumId: String(albumId) })
+
+    return tracks.sort((left, right) => {
+      return (
+        (left.mediumNumber ?? 0) - (right.mediumNumber ?? 0) ||
+        (left.absoluteTrackNumber ?? 0) - (right.absoluteTrackNumber ?? 0) ||
+        (left.trackNumber ?? '').localeCompare(right.trackNumber ?? '') ||
+        left.title.localeCompare(right.title)
+      )
+    })
   }
 
   async browse(include: 'all' | 'artist' | 'album'): Promise<SearchResult[]> {
@@ -275,14 +323,92 @@ export class LidarrService {
     }
   }
 
+  async getAlbumDetails(identifier: string, title?: string, artistName?: string): Promise<AlbumDetailsResponse> {
+    const albums = await this.getAlbums()
+    const existingAlbum = albums.find(album => {
+      if (String(album.id) === identifier || album.foreignAlbumId === identifier) {
+        return true
+      }
+
+      if (!title) {
+        return false
+      }
+
+      return (
+        normalize(album.title) === normalize(title) &&
+        (!artistName || normalize(album.artist?.artistName ?? '') === normalize(artistName))
+      )
+    })
+
+    if (existingAlbum) {
+      return {
+        album: albumSearchResult(this.baseUrl, existingAlbum, true),
+        tracks: existingAlbum.id ? await this.getTracks(existingAlbum.id) : []
+      }
+    }
+
+    if (!title && !artistName) {
+      throw new Error('Album not found.')
+    }
+
+    const lookupTerm = [artistName, title ?? identifier].filter(Boolean).join(' ')
+    const lookupAlbum = (await this.lookupAlbums(lookupTerm)).find(album => {
+      if (album.foreignAlbumId === identifier) {
+        return true
+      }
+
+      if (!title) {
+        return false
+      }
+
+      return (
+        normalize(album.title) === normalize(title) &&
+        (!artistName || normalize(album.artist?.artistName ?? '') === normalize(artistName))
+      )
+    })
+
+    if (!lookupAlbum) {
+      throw new Error('Album not found.')
+    }
+
+    return {
+      album: albumSearchResult(this.baseUrl, lookupAlbum, false),
+      tracks: []
+    }
+  }
+
   async requestArtist(artist: LidarrArtist): Promise<RequestResult> {
     const existing = await this.findExistingArtist(artist)
 
     if (existing?.id) {
+      const albums = await this.getAlbums()
+      const artistAlbums = albums.filter(album => this.albumBelongsToArtist(album, existing))
+      const albumsToMonitor = artistAlbums.filter(album => !album.monitored && album.id)
+      const albumsToSearch = artistAlbums.filter(album => album.id && albumStatus(album, true) !== 'available')
+
+      if (!existing.monitored) {
+        await this.put<LidarrArtist>(`/api/v1/artist/${existing.id}`, {
+          ...existing,
+          monitored: true,
+          monitorNewItems: 'all'
+        })
+      }
+
+      await Promise.all(
+        albumsToMonitor.map(album =>
+          this.put<LidarrAlbum>(`/api/v1/album/${album.id}`, {
+            ...album,
+            monitored: true
+          })
+        )
+      )
+
+      await this.triggerAlbumSearch(albumsToSearch.map(album => album.id).filter((id): id is number => Boolean(id)))
+
       return {
         ok: true,
-        status: 'already_exists',
-        message: `${existing.artistName} is already in Lidarr.`,
+        status: 'added',
+        message: `${existing.artistName} albums were requested.`,
         artistName: existing.artistName,
         lidarrArtistId: existing.id
       }
@@ -304,7 +430,7 @@ export class LidarrService {
     return {
       ok: true,
       status: 'added',
-      message: `${added.artistName} was added to Lidarr.`,
+      message: `${added.artistName} was requested.`,
       artistName: added.artistName,
       lidarrArtistId: added.id
     }
@@ -315,23 +441,39 @@ export class LidarrService {
       return {
         ok: false,
         status: 'failed',
-        message: `Lidarr did not return an artist for ${album.title}.`
+        message: `No artist was returned for ${album.title}.`
       }
     }
 
-    const result = await this.requestArtist(album.artist)
+    const { artist, created } = await this.ensureArtistForAlbumRequest(album.artist)
+    const requestedAlbum = await this.findExistingAlbumWithRetry(album, created ? 10 : 2)
 
-    if (result.ok) {
+    if (!requestedAlbum?.id) {
       return {
-        ...result,
-        message:
-          result.status === 'already_exists'
-            ? `${album.title} maps to ${result.artistName}, which is already in Lidarr.`
-            : `${album.title} was requested by adding ${result.artistName} to Lidarr.`
+        ok: false,
+        status: 'failed',
+        message: `${album.title} was not found after adding ${artist.artistName}.`,
+        artistName: artist.artistName,
+        lidarrArtistId: artist.id
       }
     }
 
-    return result
+    const monitoredAlbum = requestedAlbum.monitored
+      ? requestedAlbum
+      : await this.put<LidarrAlbum>(`/api/v1/album/${requestedAlbum.id}`, {
+          ...requestedAlbum,
+          monitored: true
+        })
+
+    await this.triggerAlbumSearch(monitoredAlbum.id)
+
+    return {
+      ok: true,
+      status: 'added',
+      message: `${monitoredAlbum.title} was requested.`,
+      artistName: artist.artistName,
+      lidarrArtistId: artist.id
+    }
   }
 
   async requestArtistByName(name: string): Promise<RequestResult> {
@@ -341,7 +483,7 @@ export class LidarrService {
       return {
         ok: false,
         status: 'failed',
-        message: `No Lidarr artist match found for ${name}.`,
+        message: `No artist match found for ${name}.`,
         artistName: name
       }
     }
@@ -358,6 +500,84 @@ export class LidarrService {
       }
 
       return normalize(artist.artistName) === normalize(candidate.artistName)
+    })
+  }
+
+  private albumBelongsToArtist(album: LidarrAlbum, artist: LidarrArtist) {
+    if (artist.id && album.artistId === artist.id) {
+      return true
+    }
+
+    if (artist.foreignArtistId && album.artist?.foreignArtistId === artist.foreignArtistId) {
+      return true
+    }
+
+    return normalize(album.artist?.artistName ?? '') === normalize(artist.artistName)
+  }
+
+  private async ensureArtistForAlbumRequest(candidate: LidarrArtist) {
+    const existing = await this.findExistingArtist(candidate)
+
+    if (existing) {
+      return { artist: existing, created: false }
+    }
+
+    const config = await this.getAddConfig()
+
+    const artist = await this.post<LidarrArtist>('/api/v1/artist', {
+      ...candidate,
+      monitored: false,
+      rootFolderPath: config.rootFolderPath,
+      qualityProfileId: config.qualityProfileId,
+      metadataProfileId: config.metadataProfileId,
+      addOptions: {
+        monitor: 'none',
+        searchForMissingAlbums: false
+      }
+    })
+
+    return { artist, created: true }
+  }
+
+  private async findExistingAlbum(candidate: LidarrAlbum) {
+    const albums = await this.getAlbums()
+
+    return albums.find(album => {
+      if (candidate.foreignAlbumId && album.foreignAlbumId === candidate.foreignAlbumId) {
+        return true
+      }
+
+      return (
+        normalize(album.title) === normalize(candidate.title) &&
+        normalize(album.artist?.artistName ?? '') === normalize(candidate.artist?.artistName ?? '')
+      )
+    })
+  }
+
+  private async findExistingAlbumWithRetry(candidate: LidarrAlbum, attempts: number) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const album = await this.findExistingAlbum(candidate)
+
+      if (album) {
+        return album
+      }
+
+      if (attempt < attempts - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+
+    return undefined
+  }
+
+  private async triggerAlbumSearch(albumIds?: number | number[]) {
+    const ids = Array.isArray(albumIds) ? albumIds : albumIds ? [albumIds] : []
+
+    if (!ids.length) return
+
+    await this.post('/api/v1/command', {
+      name: 'AlbumSearch',
+      albumIds: ids
     })
   }
 
@@ -396,6 +616,13 @@ export class LidarrService {
   private async post<T>(path: string, body: unknown) {
     return this.fetchJson<T>(new URL(`${this.baseUrl}${path}`), {
       method: 'POST',
+      body: JSON.stringify(body)
+    })
+  }
+
+  private async put<T>(path: string, body: unknown) {
+    return this.fetchJson<T>(new URL(`${this.baseUrl}${path}`), {
+      method: 'PUT',
       body: JSON.stringify(body)
     })
   }
