@@ -233,6 +233,8 @@ export function OverhearrApp({ initialFilter, initialQuery, initialTab, user }: 
     enabled: activeTab === 'settings'
   })
   const results = searchQuery.data ?? []
+  const artistResults = results.filter(result => result.type === 'artist')
+  const albumResults = results.filter(result => result.type === 'album')
   const bulkResults = bulkMutation.data?.results ?? []
   const currentHomeHref = useMemo(() => {
     const params = new URLSearchParams()
@@ -294,6 +296,193 @@ export function OverhearrApp({ initialFilter, initialQuery, initialTab, user }: 
     bulkMutation.mutate(artists)
   }
 
+  function resultGrid(items: SearchResult[]) {
+    return (
+      <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+        {items.map(result => {
+          const albumsHref = artistAlbumsHref(result, currentHomeHref)
+          const albumHref = albumDetailsHref(result, currentHomeHref)
+
+          return (
+            <article className="group min-w-0" key={resultKey(result)}>
+              <div
+                className="relative block aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-lg border border-slate-700/80 bg-slate-800 text-left shadow-xl shadow-black/30 outline-none ring-violet-400/70 transition hover:border-slate-500 focus:ring-2"
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    toggleResultActions(result)
+                  }
+                }}
+                onClick={event => {
+                  event.stopPropagation()
+                  toggleResultActions(result)
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                {result.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    alt=""
+                    className="h-full w-full object-cover transition duration-200 group-hover:scale-105"
+                    src={result.imageUrl}
+                  />
+                ) : (
+                  <div className="grid h-full place-items-center bg-gradient-to-br from-slate-700 to-slate-900 text-6xl font-bold text-white/10">
+                    {result.title.slice(0, 1)}
+                  </div>
+                )}
+                <div className="absolute left-2 top-2 rounded-md bg-blue-600 px-2 py-1 text-[0.68rem] font-bold uppercase text-white shadow">
+                  {typeLabel(result)}
+                </div>
+                <div
+                  className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${statusBadgeClass(result.status)}`}
+                >
+                  {statusIcon(result.status)}
+                </div>
+
+                {selectedResultKey === resultKey(result) ? (
+                  <div className="absolute inset-0 flex flex-col justify-end bg-slate-950/82 p-3 backdrop-blur-sm">
+                    <button
+                      aria-label="Close actions"
+                      className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-slate-800 text-sm font-bold text-slate-200 transition hover:bg-slate-700"
+                      onClick={event => {
+                        event.stopPropagation()
+                        setSelectedResultKey(null)
+                      }}
+                      type="button"
+                    >
+                      ×
+                    </button>
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wide text-violet-300">{typeLabel(result)}</p>
+                      {result.type === 'artist' && albumsHref ? (
+                        <Link
+                          className="mt-1 block line-clamp-2 text-sm font-bold text-white transition hover:text-violet-200"
+                          href={albumsHref}
+                          onClick={event => event.stopPropagation()}
+                        >
+                          {result.title}
+                        </Link>
+                      ) : result.type === 'album' && albumHref ? (
+                        <Link
+                          className="mt-1 block line-clamp-2 text-sm font-bold text-white transition hover:text-violet-200"
+                          href={albumHref}
+                          onClick={event => event.stopPropagation()}
+                        >
+                          {result.title}
+                        </Link>
+                      ) : (
+                        <p className="mt-1 line-clamp-2 text-sm font-bold text-white">{result.title}</p>
+                      )}
+                      {result.subtitle && result.type === 'artist' && albumsHref ? (
+                        <Link
+                          className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
+                          href={albumsHref}
+                          onClick={event => event.stopPropagation()}
+                        >
+                          {result.subtitle}
+                        </Link>
+                      ) : result.subtitle && result.type === 'album' && albumHref ? (
+                        <Link
+                          className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
+                          href={albumHref}
+                          onClick={event => event.stopPropagation()}
+                        >
+                          {result.subtitle}
+                        </Link>
+                      ) : result.subtitle ? (
+                        <p className="mt-1 line-clamp-1 text-xs text-slate-300">{result.subtitle}</p>
+                      ) : null}
+                      {canRequest(result) ? (
+                        <button
+                          className="mt-3 h-10 w-full rounded-md bg-violet-600 px-3 text-sm font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                          disabled={requestMutation.isPending && requestMutation.variables?.id === result.id}
+                          onClick={event => {
+                            event.stopPropagation()
+                            requestResult(result)
+                          }}
+                          type="button"
+                        >
+                          {requestMutation.isPending && requestMutation.variables?.id === result.id
+                            ? 'Requesting'
+                            : badgeLabel(result)}
+                        </button>
+                      ) : (
+                        <div
+                          className={`mt-3 h-10 rounded-md px-3 py-2 text-center text-sm font-bold ${statusBadgeClass(result.status)}`}
+                        >
+                          {badgeLabel(result)}
+                        </div>
+                      )}
+                      {result.type === 'artist' && albumsHref ? (
+                        <Link
+                          className="mt-2 block h-10 rounded-md bg-slate-800 px-3 py-2 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
+                          href={albumsHref}
+                          onClick={event => event.stopPropagation()}
+                        >
+                          View albums
+                        </Link>
+                      ) : result.type === 'album' && albumHref ? (
+                        <Link
+                          className="mt-2 block h-10 rounded-md bg-slate-800 px-3 py-2 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
+                          href={albumHref}
+                          onClick={event => event.stopPropagation()}
+                        >
+                          View album
+                        </Link>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-2 min-h-14">
+                {result.type === 'artist' && albumsHref ? (
+                  <Link
+                    className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100 transition hover:text-violet-200"
+                    href={albumsHref}
+                    onClick={event => event.stopPropagation()}
+                  >
+                    {result.title}
+                  </Link>
+                ) : result.type === 'album' && albumHref ? (
+                  <Link
+                    className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100 transition hover:text-violet-200"
+                    href={albumHref}
+                    onClick={event => event.stopPropagation()}
+                  >
+                    {result.title}
+                  </Link>
+                ) : (
+                  <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100">{result.title}</h3>
+                )}
+                {result.subtitle && result.type === 'artist' && albumsHref ? (
+                  <Link
+                    className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
+                    href={albumsHref}
+                    onClick={event => event.stopPropagation()}
+                  >
+                    {result.subtitle}
+                  </Link>
+                ) : result.subtitle && result.type === 'album' && albumHref ? (
+                  <Link
+                    className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
+                    href={albumHref}
+                    onClick={event => event.stopPropagation()}
+                  >
+                    {result.subtitle}
+                  </Link>
+                ) : result.subtitle ? (
+                  <p className="mt-1 line-clamp-1 text-xs text-slate-400">{result.subtitle}</p>
+                ) : null}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    )
+  }
+
   return (
     <main className="min-h-screen bg-[#0f131d] text-slate-100">
       <div className="min-h-screen md:grid md:grid-cols-[15.25rem_minmax(0,1fr)]">
@@ -331,7 +520,7 @@ export function OverhearrApp({ initialFilter, initialQuery, initialTab, user }: 
               type="button"
             >
               <span className="w-5 text-center">◷</span>
-              Requests
+              Recent Requests
             </button>
             <button
               className={`flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold transition md:w-full ${
@@ -363,25 +552,35 @@ export function OverhearrApp({ initialFilter, initialQuery, initialTab, user }: 
         <section className="min-w-0 bg-[#111722]">
           <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-[#111722]/95 px-4 py-3 backdrop-blur md:px-5">
             <div className="flex items-center gap-3">
-              <form className="flex flex-1 items-center gap-3" onSubmit={search}>
-                <div className="relative flex-1">
-                  <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">⌕</span>
-                  <input
-                    className="h-12 w-full rounded-full border border-slate-700 bg-[#121723] px-11 text-base font-medium text-white outline-none ring-violet-400/70 placeholder:text-slate-400 focus:border-slate-600 focus:ring-2"
-                    onChange={event => setQuery(event.target.value)}
-                    placeholder="Search Artists & Albums"
-                    type="search"
-                    value={query}
-                  />
+              {activeTab === 'search' ? (
+                <form className="flex flex-1 items-center gap-3" onSubmit={search}>
+                  <div className="relative flex-1">
+                    <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                      ⌕
+                    </span>
+                    <input
+                      className="h-12 w-full rounded-full border border-slate-700 bg-[#121723] px-11 text-base font-medium text-white outline-none ring-violet-400/70 placeholder:text-slate-400 focus:border-slate-600 focus:ring-2"
+                      onChange={event => setQuery(event.target.value)}
+                      placeholder="Search Artists & Albums"
+                      type="search"
+                      value={query}
+                    />
+                  </div>
+                  <button
+                    className="h-12 rounded-full bg-violet-600 px-5 text-sm font-bold text-white shadow-lg shadow-violet-950/30 transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={searchQuery.isFetching}
+                    type="submit"
+                  >
+                    {searchQuery.isFetching ? 'Searching' : 'Search'}
+                  </button>
+                </form>
+              ) : (
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-slate-400">
+                    {activeTab === 'requests' ? 'Recent Requests' : activeTab === 'bulk' ? 'Bulk Add' : 'Settings'}
+                  </p>
                 </div>
-                <button
-                  className="h-12 rounded-full bg-violet-600 px-5 text-sm font-bold text-white shadow-lg shadow-violet-950/30 transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={searchQuery.isFetching}
-                  type="submit"
-                >
-                  {searchQuery.isFetching ? 'Searching' : 'Search'}
-                </button>
-              </form>
+              )}
               <div className="relative">
                 <button
                   aria-expanded={isUserMenuOpen}
@@ -477,194 +676,45 @@ export function OverhearrApp({ initialFilter, initialQuery, initialTab, user }: 
                       ))}
                     </div>
                   ) : results.length ? (
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                      {results.map(result => {
-                        const albumsHref = artistAlbumsHref(result, currentHomeHref)
-                        const albumHref = albumDetailsHref(result, currentHomeHref)
-
-                        return (
-                          <article className="group min-w-0" key={resultKey(result)}>
-                            <div
-                              className="relative block aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-lg border border-slate-700/80 bg-slate-800 text-left shadow-xl shadow-black/30 outline-none ring-violet-400/70 transition hover:border-slate-500 focus:ring-2"
-                              onKeyDown={event => {
-                                if (event.key === 'Enter' || event.key === ' ') {
-                                  event.preventDefault()
-                                  toggleResultActions(result)
-                                }
-                              }}
-                              onClick={event => {
-                                event.stopPropagation()
-                                toggleResultActions(result)
-                              }}
-                              role="button"
-                              tabIndex={0}
-                            >
-                              {result.imageUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  alt=""
-                                  className="h-full w-full object-cover transition duration-200 group-hover:scale-105"
-                                  src={result.imageUrl}
-                                />
-                              ) : (
-                                <div className="grid h-full place-items-center bg-gradient-to-br from-slate-700 to-slate-900 text-6xl font-bold text-white/10">
-                                  {result.title.slice(0, 1)}
-                                </div>
-                              )}
-                              <div className="absolute left-2 top-2 rounded-md bg-blue-600 px-2 py-1 text-[0.68rem] font-bold uppercase text-white shadow">
-                                {typeLabel(result)}
-                              </div>
-                              <div
-                                className={`absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full text-xs font-black ${statusBadgeClass(result.status)}`}
+                    filter === 'all' ? (
+                      <div className="space-y-10">
+                        {artistResults.length ? (
+                          <section aria-labelledby="artist-results-heading">
+                            <div className="mb-4 flex items-center justify-between border-b border-slate-700/70 pb-3">
+                              <h3
+                                className="text-lg font-bold tracking-tight text-slate-100"
+                                id="artist-results-heading"
                               >
-                                {statusIcon(result.status)}
-                              </div>
+                                Artists
+                              </h3>
+                              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-bold text-slate-300">
+                                {artistResults.length}
+                              </span>
+                            </div>
+                            {resultGrid(artistResults)}
+                          </section>
+                        ) : null}
 
-                              {selectedResultKey === resultKey(result) ? (
-                                <div className="absolute inset-0 flex flex-col justify-end bg-slate-950/82 p-3 backdrop-blur-sm">
-                                  <button
-                                    aria-label="Close actions"
-                                    className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-slate-800 text-sm font-bold text-slate-200 transition hover:bg-slate-700"
-                                    onClick={event => {
-                                      event.stopPropagation()
-                                      setSelectedResultKey(null)
-                                    }}
-                                    type="button"
-                                  >
-                                    ×
-                                  </button>
-                                  <div>
-                                    <p className="text-xs font-bold uppercase tracking-wide text-violet-300">
-                                      {typeLabel(result)}
-                                    </p>
-                                    {result.type === 'artist' && albumsHref ? (
-                                      <Link
-                                        className="mt-1 block line-clamp-2 text-sm font-bold text-white transition hover:text-violet-200"
-                                        href={albumsHref}
-                                        onClick={event => event.stopPropagation()}
-                                      >
-                                        {result.title}
-                                      </Link>
-                                    ) : result.type === 'album' && albumHref ? (
-                                      <Link
-                                        className="mt-1 block line-clamp-2 text-sm font-bold text-white transition hover:text-violet-200"
-                                        href={albumHref}
-                                        onClick={event => event.stopPropagation()}
-                                      >
-                                        {result.title}
-                                      </Link>
-                                    ) : (
-                                      <p className="mt-1 line-clamp-2 text-sm font-bold text-white">{result.title}</p>
-                                    )}
-                                    {result.subtitle && result.type === 'artist' && albumsHref ? (
-                                      <Link
-                                        className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
-                                        href={albumsHref}
-                                        onClick={event => event.stopPropagation()}
-                                      >
-                                        {result.subtitle}
-                                      </Link>
-                                    ) : result.subtitle && result.type === 'album' && albumHref ? (
-                                      <Link
-                                        className="mt-1 block line-clamp-1 text-xs text-slate-300 transition hover:text-violet-200"
-                                        href={albumHref}
-                                        onClick={event => event.stopPropagation()}
-                                      >
-                                        {result.subtitle}
-                                      </Link>
-                                    ) : result.subtitle ? (
-                                      <p className="mt-1 line-clamp-1 text-xs text-slate-300">{result.subtitle}</p>
-                                    ) : null}
-                                    {canRequest(result) ? (
-                                      <button
-                                        className="mt-3 h-10 w-full rounded-md bg-violet-600 px-3 text-sm font-bold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                                        disabled={
-                                          requestMutation.isPending && requestMutation.variables?.id === result.id
-                                        }
-                                        onClick={event => {
-                                          event.stopPropagation()
-                                          requestResult(result)
-                                        }}
-                                        type="button"
-                                      >
-                                        {requestMutation.isPending && requestMutation.variables?.id === result.id
-                                          ? 'Requesting'
-                                          : badgeLabel(result)}
-                                      </button>
-                                    ) : (
-                                      <div
-                                        className={`mt-3 h-10 rounded-md px-3 py-2 text-center text-sm font-bold ${statusBadgeClass(result.status)}`}
-                                      >
-                                        {badgeLabel(result)}
-                                      </div>
-                                    )}
-                                    {result.type === 'artist' && albumsHref ? (
-                                      <Link
-                                        className="mt-2 block h-10 rounded-md bg-slate-800 px-3 py-2 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
-                                        href={albumsHref}
-                                        onClick={event => event.stopPropagation()}
-                                      >
-                                        View albums
-                                      </Link>
-                                    ) : result.type === 'album' && albumHref ? (
-                                      <Link
-                                        className="mt-2 block h-10 rounded-md bg-slate-800 px-3 py-2 text-center text-sm font-bold text-slate-100 transition hover:bg-slate-700"
-                                        href={albumHref}
-                                        onClick={event => event.stopPropagation()}
-                                      >
-                                        View album
-                                      </Link>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              ) : null}
+                        {albumResults.length ? (
+                          <section aria-labelledby="album-results-heading">
+                            <div className="mb-4 flex items-center justify-between border-b border-slate-700/70 pb-3">
+                              <h3
+                                className="text-lg font-bold tracking-tight text-slate-100"
+                                id="album-results-heading"
+                              >
+                                Albums
+                              </h3>
+                              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-bold text-slate-300">
+                                {albumResults.length}
+                              </span>
                             </div>
-                            <div className="mt-2 min-h-14">
-                              {result.type === 'artist' && albumsHref ? (
-                                <Link
-                                  className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100 transition hover:text-violet-200"
-                                  href={albumsHref}
-                                  onClick={event => event.stopPropagation()}
-                                >
-                                  {result.title}
-                                </Link>
-                              ) : result.type === 'album' && albumHref ? (
-                                <Link
-                                  className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100 transition hover:text-violet-200"
-                                  href={albumHref}
-                                  onClick={event => event.stopPropagation()}
-                                >
-                                  {result.title}
-                                </Link>
-                              ) : (
-                                <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-slate-100">
-                                  {result.title}
-                                </h3>
-                              )}
-                              {result.subtitle && result.type === 'artist' && albumsHref ? (
-                                <Link
-                                  className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
-                                  href={albumsHref}
-                                  onClick={event => event.stopPropagation()}
-                                >
-                                  {result.subtitle}
-                                </Link>
-                              ) : result.subtitle && result.type === 'album' && albumHref ? (
-                                <Link
-                                  className="mt-1 block line-clamp-1 text-xs text-slate-400 transition hover:text-violet-200"
-                                  href={albumHref}
-                                  onClick={event => event.stopPropagation()}
-                                >
-                                  {result.subtitle}
-                                </Link>
-                              ) : result.subtitle ? (
-                                <p className="mt-1 line-clamp-1 text-xs text-slate-400">{result.subtitle}</p>
-                              ) : null}
-                            </div>
-                          </article>
-                        )
-                      })}
-                    </div>
+                            {resultGrid(albumResults)}
+                          </section>
+                        ) : null}
+                      </div>
+                    ) : (
+                      resultGrid(results)
+                    )
                   ) : (
                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                       {['Search artists', 'Find albums', 'Request music', 'Bulk add'].map(item => (
